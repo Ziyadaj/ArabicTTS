@@ -1,0 +1,62 @@
+[project]
+name = "arabic-tts"
+version = "0.1.0"
+description = "Fine-tune and serve XTTS v2 for Najdi Arabic (SADA 2022)."
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+license = { text = "MIT" }
+authors = [{ name = "Ziyad" }]
+keywords = ["tts", "arabic", "xtts", "najdi", "sada"]
+
+# Light deps usable without a GPU (data prep, CLI, tests).
+dependencies = [
+    "click>=8.1",
+    "pandas>=2.0",
+    "numpy>=1.24,<2.0",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+    "pyarabic>=0.6.15",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Heavy stack — installed on the GPU box. Pinned to a known-good combo
+# with CUDA 12.1 and RTX 4080 (sm_89) support.
+tts = [
+    "torch==2.2.2",
+    "torchaudio==2.2.2",
+    "TTS==0.22.0",
+    "trainer==0.0.36",
+    "gradio>=4.19,<5",
+    "transformers>=4.40,<4.50",
+]
+dev = [
+    "ruff>=0.4",
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[project.scripts]
+arabic-tts = "arabic_tts.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arabic_tts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "N"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

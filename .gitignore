@@ -1,7 +1,7 @@
-data/
-runs/
-cache/
-dcgm/
+/data/
+/runs/
+/cache/
+/dcgm/
 .ruff_cache/
 *.wav
 *.mp3
