@@ -1,4 +1,12 @@
 data/
+runs/
+cache/
+dcgm/
+.ruff_cache/
+*.wav
+*.mp3
+*.flac
+!tests/**/*.wav
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
