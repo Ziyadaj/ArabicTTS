@@ -90,45 +90,93 @@ Drops the five files (`model.pth`, `config.json`, `dvae.pth`, `mel_stats.pth`,
 `vocab.json`) into `~/.local/share/tts/tts_models--multilingual--multi-dataset--xtts_v2/`.
 `arabic-tts train` will also download these on demand into the run directory.
 
-### 2. Prepare the SADA Najdi split
+### 2. Pull SADA 2022 from Kaggle
 
-The [SADA 2022](https://arabicspeech.org/) dataset ships long audio files plus
-a CSV of utterance segments. Convert to one-wav-per-utterance at 22050 Hz:
+SADA is gated behind a Kaggle dataset terms click-through. One-time setup:
+
+1. `pip install kaggle` (already in the lite deps).
+2. https://www.kaggle.com/settings → **Create New Token** → save `kaggle.json`
+   to `~/.kaggle/kaggle.json` (chmod 600).
+3. Visit https://www.kaggle.com/datasets/sdaiancai/sada2022 once in a browser
+   and accept the dataset terms. The CLI returns 403 until you do this.
+
+Then:
+
+```zsh
+arabic-tts download-sada --dest data
+```
+
+Pulls the zip into `data/`, unzips into `data/extracted/`, and verifies that
+`train.csv`, `valid.csv`, `test.csv`, and the long `.wav` files are present.
+Plan for **~50–100 GB** of disk for the raw download and several hundred GB
+more if you materialize all dialects as segmented per-utterance wavs (Najdi
+alone after filtering is much smaller).
+
+### 3. Inspect what's actually in there
+
+The dataset's per-dialect hour breakdown isn't published, so confirm Najdi is
+big enough for your goals before cutting wavs:
+
+```zsh
+arabic-tts inspect-sada --csv data/extracted/sada2022/train.csv
+arabic-tts inspect-sada --csv data/extracted/sada2022/train.csv --dialect Najdi
+```
+
+Reports total hours, per-dialect / per-environment / per-gender hours, and the
+top 10 speakers by utterance count.
+
+### 4. Prepare the Najdi split
+
+Convert SADA's long files into one-wav-per-utterance at 22050 Hz with
+sensible filters (Clean only, named gender, single speaker, length 1–11 s,
+speaker-balanced):
 
 ```zsh
 arabic-tts prepare-sada \
-  --csv data/sada2022/train.csv \
-  --audio-dir data/sada2022 \
-  --out  data/sada_najdi_prepared
+  --csv       data/extracted/sada2022/train.csv \
+  --audio-dir data/extracted/sada2022 \
+  --out       data/sada_najdi_prepared
 ```
 
-Writes `data/sada_najdi_prepared/wavs/*.wav` plus `metadata.csv`
-(`wav|text|speaker`, LJSpeech-style). The filter keeps segments between 1–11 s
-with non-empty normalized Arabic text.
+Useful knobs:
 
-Repeat for `valid.csv` if you want a separate eval split.
+- `--environments Clean,Music` — keep extra environments (default `Clean`).
+- `--genders male,female,unknown` — keep all (default skips unknown).
+- `--max-utterances 200` — cap per-speaker so no one voice dominates.
+- `--min-utterances 5` — drop speakers with too little data to learn.
+- `--max-hours 30` — total-hour budget; randomly subsamples to fit.
 
-### 3. Fine-tune
+Output: `wavs/*.wav`, `metadata.csv` (`wav|text|speaker`), and `reference.txt`
+pointing at a clip the trainer will auto-use as the periodic test_sentences
+speaker reference. Run again on `valid.csv` for the eval split.
+
+### 5. Fine-tune
 
 ```zsh
+# Sanity-check the whole pipeline in ~3 minutes before spending hours.
+arabic-tts train --dataset data/sada_najdi_prepared --out runs/smoke --smoke
+
+# Real run.
 arabic-tts train \
   --dataset data/sada_najdi_prepared \
   --out     runs/xtts_najdi_01 \
-  --epochs  10
+  --epochs  30
+
+# Resume from the latest checkpoint.
+arabic-tts train --dataset data/sada_najdi_prepared --out runs/xtts_najdi_01 --resume latest
 ```
 
 Defaults target a single RTX 4080 (16 GB): `batch_size=2`, `grad_accum=32`
 (effective batch = 64), `max_wav_length=11s`. Tune `--batch-size` /
-`--grad-accum` if you hit OOM.
+`--grad-accum` if you hit OOM. The trainer logs CUDA device info on startup.
 
-Logs go to `runs/xtts_najdi_01/...`; TensorBoard-compatible events are written
-alongside checkpoints. Watch training with:
+Watch training:
 
 ```zsh
 tensorboard --logdir runs/
 ```
 
-### 4. Serve the Gradio UI
+### 6. Serve the Gradio UI
 
 ```zsh
 arabic-tts serve                                   # uses the base XTTS v2
@@ -138,7 +186,7 @@ arabic-tts serve --model-dir runs/xtts_najdi_01/best_model  # fine-tuned
 Open http://localhost:7860. Upload a 5–30 s reference clip, paste Arabic text,
 hit Generate.
 
-### 5. One-shot CLI synthesis
+### 7. One-shot CLI synthesis
 
 ```zsh
 arabic-tts synth \
@@ -174,5 +222,11 @@ to run in CI on a stock Ubuntu runner.
 
 ## License
 
-MIT for the code in this repository. See `LICENSE` (TODO). The XTTS v2 weights
-downloaded by `arabic-tts download-xtts` are governed by CPML, not MIT.
+- **Code**: MIT.
+- **XTTS v2 weights** (downloaded by `arabic-tts download-xtts`): governed by
+  the [Coqui Public Model License](https://coqui.ai/cpml).
+- **SADA 2022 dataset** (pulled by `arabic-tts download-sada`): **CC BY-NC-SA
+  4.0** — non-commercial, attribution required, share-alike. **Models
+  fine-tuned on SADA inherit these terms** and cannot be released
+  commercially. Cite Alharbi et al., "SADA: Saudi Audio Dataset for Arabic,"
+  IEEE ICASSP 2024.
