@@ -164,6 +164,24 @@ def download_xtts(dest: Path | None) -> None:
 @click.option("--grad-accum", default=32, show_default=True, type=int)
 @click.option("--epochs", default=10, show_default=True, type=int)
 @click.option("--run-name", default="xtts_sada_najdi", show_default=True)
+@click.option(
+    "--smoke",
+    is_flag=True,
+    default=False,
+    help="Tiny config (1 epoch, batch 1) to validate the full pipeline end-to-end.",
+)
+@click.option(
+    "--resume",
+    "restore_path",
+    default=None,
+    help="Pass a checkpoint path or `latest` to auto-discover the most recent.",
+)
+@click.option(
+    "--reference-wav",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Speaker reference for the periodic test_sentences synthesis.",
+)
 def train(
     dataset_path: Path,
     output_path: Path,
@@ -171,10 +189,14 @@ def train(
     grad_accum: int,
     epochs: int,
     run_name: str,
+    smoke: bool,
+    restore_path: str | None,
+    reference_wav: Path | None,
 ) -> None:
     """Fine-tune XTTS v2 on the prepared dataset."""
     from arabic_tts.training.finetune import TrainArgs, run
 
+    restore = Path(restore_path) if restore_path else None
     args = TrainArgs(
         dataset_path=dataset_path,
         output_path=output_path,
@@ -182,6 +204,9 @@ def train(
         grad_acumm_steps=grad_accum,
         num_epochs=epochs,
         run_name=run_name,
+        smoke=smoke,
+        restore_path=restore,
+        reference_wav=reference_wav,
     )
     run(args)
 

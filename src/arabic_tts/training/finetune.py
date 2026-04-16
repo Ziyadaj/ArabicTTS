@@ -10,7 +10,7 @@ Closely mirrors Coqui's reference LJSpeech recipe
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from arabic_tts.data.formatter import sada_najdi_formatter
@@ -45,6 +45,11 @@ class TrainArgs:
     num_loader_workers: int = 8
     meta_file_train: str = "metadata.csv"
     meta_file_val: str | None = None
+    # Resume / smoke-test ergonomics.
+    restore_path: Path | None = None
+    smoke: bool = False
+    reference_wav: Path | None = None
+    test_text: str = "مرحبا، كيف حالك اليوم؟"
 
 
 def _download_if_missing(url: str, dest: Path) -> Path:
@@ -76,6 +81,46 @@ def ensure_base_assets(checkpoints_dir: Path) -> dict[str, Path]:
     return assets
 
 
+def _log_gpu() -> None:
+    try:
+        import torch
+    except ImportError:
+        return
+    if not torch.cuda.is_available():
+        logger.warning("CUDA not available — training will be unusably slow on CPU.")
+        return
+    n = torch.cuda.device_count()
+    for i in range(n):
+        props = torch.cuda.get_device_properties(i)
+        logger.info(
+            "GPU %d: %s, %.1f GB, sm_%d%d",
+            i,
+            props.name,
+            props.total_memory / (1024**3),
+            props.major,
+            props.minor,
+        )
+
+
+def _resolve_restore_path(restore: Path | None, output_path: Path) -> str | None:
+    """Find a checkpoint to restore from. `restore=Path('latest')` auto-discovers."""
+    if restore is None:
+        return None
+    if str(restore) == "latest":
+        candidates = sorted(output_path.glob("**/best_model*.pth")) + sorted(
+            output_path.glob("**/checkpoint_*.pth")
+        )
+        if not candidates:
+            logger.warning("--resume requested but no checkpoints under %s", output_path)
+            return None
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        logger.info("Resuming from %s", latest)
+        return str(latest)
+    if not restore.is_file():
+        raise FileNotFoundError(f"--resume path not found: {restore}")
+    return str(restore)
+
+
 def run(args: TrainArgs) -> Path:
     # Heavy imports are local so this module stays importable for --help / CI.
     from trainer import Trainer, TrainerArgs
@@ -88,12 +133,34 @@ def run(args: TrainArgs) -> Path:
         XttsAudioConfig,
     )
 
+    _log_gpu()
+
     dataset_path = args.dataset_path.resolve()
     output_path = args.output_path.resolve()
     output_path.mkdir(parents=True, exist_ok=True)
     checkpoints_dir = output_path / "xtts_base"
 
+    # Smoke mode: tiny budget that still exercises the full pipeline.
+    if args.smoke:
+        logger.info("SMOKE MODE: minimal config to validate the pipeline.")
+        args = replace(
+            args,
+            num_epochs=1,
+            save_step=50,
+            num_loader_workers=2,
+            batch_size=1,
+            grad_acumm_steps=1,
+        )
+
     assets = ensure_base_assets(checkpoints_dir)
+
+    # Auto-pick a reference wav from the prepared corpus if none supplied.
+    reference_wav = args.reference_wav
+    if reference_wav is None:
+        ref_pointer = dataset_path / "reference.txt"
+        if ref_pointer.is_file():
+            reference_wav = (dataset_path / ref_pointer.read_text().strip()).resolve()
+            logger.info("Using auto-picked reference clip: %s", reference_wav)
 
     dataset_config = BaseDatasetConfig(
         formatter="sada_najdi",
@@ -157,8 +224,8 @@ def run(args: TrainArgs) -> Path:
         },
         test_sentences=[
             {
-                "text": "مرحبا، كيف حالك اليوم؟",
-                "speaker_wav": "",
+                "text": args.test_text,
+                "speaker_wav": str(reference_wav) if reference_wav else "",
                 "language": args.language,
             }
         ],
@@ -175,9 +242,10 @@ def run(args: TrainArgs) -> Path:
         formatter=sada_najdi_formatter,
     )
 
+    restore = _resolve_restore_path(args.restore_path, output_path)
     trainer = Trainer(
         TrainerArgs(
-            restore_path=None,
+            restore_path=restore,
             skip_train_epoch=False,
             start_with_eval=False,
             grad_accum_steps=args.grad_acumm_steps,
