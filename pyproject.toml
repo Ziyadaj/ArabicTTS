@@ -17,6 +17,7 @@ dependencies = [
     "librosa>=0.10",
     "pyarabic>=0.6.15",
     "tqdm>=4.66",
+    "kaggle>=1.6",
 ]
 
 [project.optional-dependencies]

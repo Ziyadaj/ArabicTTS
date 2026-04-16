@@ -91,6 +91,97 @@ def filter_segments(
     return out.reset_index(drop=True)
 
 
+def filter_quality(
+    df: pd.DataFrame,
+    *,
+    environments: tuple[str, ...] | None = ("Clean",),
+    genders: tuple[str, ...] | None = ("male", "female"),
+    exclude_multispeaker: bool = True,
+) -> pd.DataFrame:
+    """Optional quality filters using SADA metadata columns.
+
+    `environments=None` keeps all; `genders=None` keeps all. Defaults match a
+    reasonable starting recipe: Clean recordings, named gender, single speaker.
+    """
+    out = df
+    if environments and "Environment" in out.columns:
+        out = out[out["Environment"].isin(environments)]
+    if genders and "SpeakerGender" in out.columns:
+        out = out[out["SpeakerGender"].isin(genders)]
+    if exclude_multispeaker and "SpeakerDialect" in out.columns:
+        out = out[out["SpeakerDialect"] != "More than 1 speaker"]
+    out = out.reset_index(drop=True)
+    logger.info("Quality filter kept %d / %d rows", len(out), len(df))
+    return out
+
+
+def balance_speakers(
+    df: pd.DataFrame,
+    *,
+    min_utterances: int = 5,
+    max_utterances: int | None = 200,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Drop tiny speakers and cap dominant ones so no one voice swamps training."""
+    if "Speaker" not in df.columns or df.empty:
+        return df.reset_index(drop=True)
+    counts = df["Speaker"].value_counts()
+    keep_speakers = counts[counts >= min_utterances].index
+    out = df[df["Speaker"].isin(keep_speakers)]
+    if max_utterances is not None:
+        rng = np.random.default_rng(seed)
+        capped: list[pd.DataFrame] = []
+        for _, group in out.groupby("Speaker", sort=False):
+            if len(group) > max_utterances:
+                idx = rng.choice(len(group), size=max_utterances, replace=False)
+                capped.append(group.iloc[sorted(idx)])
+            else:
+                capped.append(group)
+        out = pd.concat(capped, ignore_index=True) if capped else out.iloc[0:0]
+    out = out.reset_index(drop=True)
+    logger.info(
+        "Speaker balance: %d → %d rows across %d speakers",
+        len(df),
+        len(out),
+        out["Speaker"].nunique() if "Speaker" in out.columns else 0,
+    )
+    return out
+
+
+def cap_total_hours(df: pd.DataFrame, *, max_hours: float, seed: int = 0) -> pd.DataFrame:
+    """Take a random subset that sums to at most `max_hours` of audio."""
+    if df.empty:
+        return df.reset_index(drop=True)
+    durations = df["SegmentEnd"].astype(float) - df["SegmentStart"].astype(float)
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(df))
+    cumulative = durations.iloc[order].cumsum() / 3600.0
+    keep_idx = order[cumulative.values <= max_hours]
+    out = df.iloc[sorted(keep_idx)].reset_index(drop=True)
+    logger.info(
+        "Hour cap %.2f h → %d rows (%.2f h)",
+        max_hours,
+        len(out),
+        float(durations.iloc[sorted(keep_idx)].sum() / 3600.0),
+    )
+    return out
+
+
+def pick_reference_clip(
+    rows: list[Utterance], *, prefer_speaker: str | None = None
+) -> Utterance | None:
+    """Pick a stable reference clip for `test_sentences` and demo speaker_wav.
+
+    Strategy: longest text, optionally restricted to a chosen speaker.
+    """
+    candidates = [r for r in rows if (prefer_speaker is None or r.speaker == prefer_speaker)]
+    if not candidates:
+        candidates = rows
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: len(r.text))
+
+
 def _segment_id(row: pd.Series, idx: int) -> str:
     stem = Path(row["FileName"]).stem
     start_ms = int(round(float(row["SegmentStart"]) * 1000))
@@ -181,12 +272,35 @@ def prepare_split(
     out_dir: Path,
     dialect: str = "Najdi",
     sample_rate: int = XTTS_SAMPLE_RATE,
+    environments: tuple[str, ...] | None = ("Clean",),
+    genders: tuple[str, ...] | None = ("male", "female"),
+    exclude_multispeaker: bool = True,
+    min_utterances_per_speaker: int = 5,
+    max_utterances_per_speaker: int | None = 200,
+    max_hours: float | None = None,
     load_audio: LoadAudio | None = None,
     save_audio: SaveAudio | None = None,
 ) -> Path:
-    """End-to-end: CSV → filtered manifest + segmented wavs. Returns metadata path."""
+    """End-to-end: CSV → filtered manifest + segmented wavs. Returns metadata path.
+
+    Defaults reflect a sensible starting recipe: Najdi only, Clean recordings,
+    named gender, single speaker, length-filtered, speaker-balanced.
+    """
     df = load_sada_csv(csv_path, dialect=dialect)
+    df = filter_quality(
+        df,
+        environments=environments,
+        genders=genders,
+        exclude_multispeaker=exclude_multispeaker,
+    )
     df = filter_segments(df)
+    df = balance_speakers(
+        df,
+        min_utterances=min_utterances_per_speaker,
+        max_utterances=max_utterances_per_speaker,
+    )
+    if max_hours is not None:
+        df = cap_total_hours(df, max_hours=max_hours)
     rows = build_manifest(
         df,
         source_audio_dir=source_audio_dir,
@@ -195,4 +309,8 @@ def prepare_split(
         load_audio=load_audio,
         save_audio=save_audio,
     )
-    return write_metadata(rows, out_dir)
+    meta = write_metadata(rows, out_dir)
+    ref = pick_reference_clip(rows)
+    if ref is not None:
+        (out_dir / "reference.txt").write_text(ref.wav_relpath, encoding="utf-8")
+    return meta

@@ -41,12 +41,101 @@ def main() -> None:
     help="Where to write wavs/ and metadata.csv.",
 )
 @click.option("--dialect", default="Najdi", show_default=True)
-def prepare_sada(csv_path: Path, audio_dir: Path, out_dir: Path, dialect: str) -> None:
+@click.option(
+    "--environments",
+    default="Clean",
+    show_default=True,
+    help="Comma-separated env list (Clean,Car,Music,Noisy). Empty string keeps all.",
+)
+@click.option(
+    "--genders",
+    default="male,female",
+    show_default=True,
+    help="Comma-separated genders (male,female,unknown). Empty string keeps all.",
+)
+@click.option(
+    "--min-utterances", default=5, show_default=True, type=int, help="Drop speakers with fewer."
+)
+@click.option(
+    "--max-utterances",
+    default=200,
+    show_default=True,
+    type=int,
+    help="Cap per-speaker utterances. Use -1 to disable.",
+)
+@click.option(
+    "--max-hours",
+    default=None,
+    type=float,
+    help="Optional total-hour budget; randomly subsamples to fit.",
+)
+def prepare_sada(
+    csv_path: Path,
+    audio_dir: Path,
+    out_dir: Path,
+    dialect: str,
+    environments: str,
+    genders: str,
+    min_utterances: int,
+    max_utterances: int,
+    max_hours: float | None,
+) -> None:
     """Segment SADA audio and emit LJSpeech-style metadata."""
     from arabic_tts.data.sada import prepare_split
 
-    meta = prepare_split(csv_path, source_audio_dir=audio_dir, out_dir=out_dir, dialect=dialect)
+    env_tuple = tuple(e for e in environments.split(",") if e) or None
+    gender_tuple = tuple(g for g in genders.split(",") if g) or None
+    cap = None if max_utterances < 0 else max_utterances
+
+    meta = prepare_split(
+        csv_path,
+        source_audio_dir=audio_dir,
+        out_dir=out_dir,
+        dialect=dialect,
+        environments=env_tuple,
+        genders=gender_tuple,
+        min_utterances_per_speaker=min_utterances,
+        max_utterances_per_speaker=cap,
+        max_hours=max_hours,
+    )
     click.echo(f"Wrote {meta}")
+    ref = out_dir / "reference.txt"
+    if ref.is_file():
+        click.echo(f"Reference clip: {out_dir / ref.read_text().strip()}")
+
+
+@main.command("download-sada")
+@click.option(
+    "--dest",
+    type=click.Path(path_type=Path),
+    default=Path("data"),
+    show_default=True,
+    help="Where to put the Kaggle zip and the extracted dataset.",
+)
+@click.option("--force", is_flag=True, default=False, help="Re-download even if zip is present.")
+def download_sada(dest: Path, force: bool) -> None:
+    """Pull SADA 2022 from Kaggle and verify the layout."""
+    from arabic_tts.data.kaggle_pull import KaggleNotConfiguredError, pull
+
+    try:
+        layout = pull(dest, force=force)
+    except KaggleNotConfiguredError as e:
+        raise click.ClickException(str(e)) from e
+    root = layout.pop("__root__")
+    click.echo(f"SADA root: {root}")
+    for name, path in sorted(layout.items()):
+        click.echo(f"  {name}: {path}")
+
+
+@main.command("inspect-sada")
+@click.option("--csv", "csv_path", required=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--dialect", default=None, help="Restrict the report to a single dialect.")
+def inspect_sada(csv_path: Path, dialect: str | None) -> None:
+    """Report hours by dialect/environment/gender + speaker counts for a split."""
+    from arabic_tts.data.inspect import summarize
+
+    report = summarize(csv_path, dialect=dialect)
+    click.echo(report.render())
 
 
 @main.command("download-xtts")

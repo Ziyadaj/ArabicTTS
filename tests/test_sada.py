@@ -177,14 +177,22 @@ def test_prepare_split_end_to_end(tmp_path):
     def fake_save(path: Path, wav: np.ndarray, rate: int):
         writes.append(path)
 
+    out_dir = tmp_path / "out"
     meta_path = prepare_split(
         csv,
         source_audio_dir=tmp_path,
-        out_dir=tmp_path / "out",
+        out_dir=out_dir,
         load_audio=fake_load,
         save_audio=fake_save,
+        # Disable optional filters that would otherwise drop the test fixture.
+        environments=None,
+        genders=None,
+        min_utterances_per_speaker=1,
+        max_utterances_per_speaker=None,
     )
     assert meta_path.is_file()
     # 2 kept rows
     assert len(writes) == 2
     assert len(meta_path.read_text().splitlines()) == 2
+    # reference.txt is written so training can auto-pick a speaker_wav.
+    assert (out_dir / "reference.txt").is_file()
