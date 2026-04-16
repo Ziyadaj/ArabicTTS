@@ -84,11 +84,7 @@ def filter_segments(
     """Drop segments that are too short, too long, or have empty text."""
     duration = df["SegmentEnd"].astype(float) - df["SegmentStart"].astype(float)
     text = df["ProcessedText"].fillna("").astype(str).map(normalize_arabic)
-    keep = (
-        (duration >= min_seconds)
-        & (duration <= max_seconds)
-        & (text.str.len() >= min_chars)
-    )
+    keep = (duration >= min_seconds) & (duration <= max_seconds) & (text.str.len() >= min_chars)
     out = df.loc[keep].copy()
     out["ProcessedText"] = text[keep]
     logger.info("Kept %d / %d segments after filtering", len(out), len(df))
@@ -166,7 +162,9 @@ def build_manifest(
     return rows
 
 
-def write_metadata(rows: Iterable[Utterance], out_dir: Path, *, filename: str = "metadata.csv") -> Path:
+def write_metadata(
+    rows: Iterable[Utterance], out_dir: Path, *, filename: str = "metadata.csv"
+) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / filename
     with path.open("w", newline="", encoding="utf-8") as f:
