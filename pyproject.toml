@@ -11,7 +11,7 @@ keywords = ["tts", "arabic", "xtts", "najdi", "sada"]
 # Light deps usable without a GPU (data prep, CLI, tests).
 dependencies = [
     "click>=8.1",
-    "pandas>=2.0",
+    "pandas>=1.4",
     "numpy>=1.24,<2.0",
     "soundfile>=0.12",
     "librosa>=0.10",
